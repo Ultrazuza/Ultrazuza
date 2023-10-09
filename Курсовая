@@ -1,0 +1,80 @@
+# Курсовая работа SQL
+
+## Задача
+
+Задача курсовой была смоделировать изменение балансов студентов(количество урокову каждого студента). 
+Также убедиться все ли в порядке с нашими данными, и составить список гипотез и вопросов, если есть есть проблемы
+
+Для этого нам подобилось вычислить:
+- сколько всего уроков было на балансе всех учеников за каждый календарный день;
+- как это количество менялось под влиянием транзакций (оплат, начислений, корректирующих списаний) и уроков (списаний)
+
+## Решение
+
+Для начала выполнения этой задачи, я написа SQL запрос (ниже) , путем создания СТЕ и последоватеьного их объединения я получил SQL-запрос со всеми необходимыми мне данными в одной таблицы.
+Данный запрос помог мне быстро достать нужные мне данные без допонительных длинных запросов
+
+with calendar as
+        (Select dt
+            , user_id
+        from    (select  distinct(date_trunc('day', class_start_datetime)) as dt
+                from skyeng_db.classes
+        where class_start_datetime<'2017-01-01') a
+            left join   (select user_id
+                        ,   date_trunc('day', transaction_datetime) as first_payment_date
+                        from 
+                            (Select  user_id
+                                ,   status_name
+                                ,   transaction_datetime
+                                ,   row_number() over (partition by user_id order by transaction_datetime) as number_trans
+                            from skyeng_db.payments 
+                            where status_name = 'success'
+                            ) first_payments
+                            where   number_trans = 1) b
+                on a.dt>=b.first_payment_date
+        where user_id is not null),
+transactions as
+        (select  user_id
+            ,   date_trunc('day', transaction_datetime) as payments_by_dates
+            ,   classes as transaction_balance_change
+        from skyeng_db.payments
+        where status_name = 'success'),
+calendar_transactions as
+        (select  a.user_id
+            ,   dt
+            ,   transaction_balance_change
+        from calendar a
+            left join transactions b
+                on a.user_id = b.user_id and a.dt = b.payments_by_dates),
+lessons_changes as
+        (select all_dates
+            ,   user_id
+            ,   count_l_per_day
+        from ( select distinct(date_trunc('day', class_start_datetime)) as all_dates
+        from skyeng_db.classes) a
+            left join (select user_id
+                            ,   date_trunc('day', class_start_datetime) as class_start_datetime
+                            ,   class_status
+                            ,   class_type
+                            ,   (count(*) over (partition by user_id,class_start_datetime))*(-1) as count_l_per_day
+                            ,   count(*) over (partition by user_id) as count_users_l
+                        from skyeng_db.classes
+                            where class_status = 'success'
+                                and class_type <> 'trial') b
+                on  a.all_dates = b.class_start_datetime
+        order by all_dates),
+balances as 
+    (select  a.user_id
+        ,   dt
+        ,   transaction_balance_change
+        ,   count_l_per_day
+        ,   (sum(transaction_balance_change) over (partition by a.user_id order by dt)+sum(count_l_per_day) over (partition by a.user_id order by dt)) as user_balance
+        ,   sum(transaction_balance_change) over (partition by a.user_id order by dt) as ALL_trans
+        ,   sum(count_l_per_day) over (partition by a.user_id order by dt) as ALL_L
+        ,   (sum(transaction_balance_change) over (order by dt))+(sum(count_l_per_day) over (order by dt)) as ALL_balance
+    from calendar_transactions a
+        left join lessons_changes b
+            on a.user_id=b.user_id and a.dt=b.all_dates
+    order by user_id,dt)
+
+Это все)
